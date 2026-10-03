@@ -24,6 +24,8 @@ tokio = { version = "1", features = ["full"] }
 android_logger = { version = "0.14.1" }
 log = { version = "0.4.21" }
 convex = { version = "0.10.4", default-features = false, features = ["rustls-tls-webpki-roots"] }
+# Pinned to the version `convex` itself pins; provides `UserIdentityAttributes` for set_admin_auth.
+convex_sync_types = { version = "=0.10.4" }
 async-trait = "0.1"
 anyhow = { version = "1.0.86" }
 thiserror = { version = "1.0.61" }

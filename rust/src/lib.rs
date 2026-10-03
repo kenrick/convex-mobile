@@ -8,6 +8,7 @@ use convex::{
     AuthTokenFetcher, AuthenticationToken, ConvexClient, ConvexClientBuilder, FunctionResult,
     Value, WebSocketState,
 };
+use convex_sync_types::UserIdentityAttributes;
 use futures::{
     channel::oneshot::{self, Sender},
     pin_mut, select_biased, FutureExt, StreamExt,
@@ -346,6 +347,40 @@ impl MobileConvexClient {
             .await
             .map_err(|e| e.into())
     }
+
+    /// Authenticate with a deployment admin key, optionally acting as a user.
+    ///
+    /// For development tooling only: an admin key has full access to the
+    /// deployment. `acting_as_json` is a JSON object in the shape of the
+    /// JavaScript client's `UserIdentityAttributes` (camelCase keys; either
+    /// `tokenIdentifier` or both `issuer` and `subject`; other keys become
+    /// custom claims). Functions then see that identity as the current user.
+    ///
+    /// Replaces any token or auth callback set earlier.
+    pub async fn set_admin_auth(
+        &self,
+        admin_key: String,
+        acting_as_json: Option<String>,
+    ) -> Result<(), ClientError> {
+        Ok(self.internal_set_admin_auth(admin_key, acting_as_json).await?)
+    }
+
+    async fn internal_set_admin_auth(
+        &self,
+        admin_key: String,
+        acting_as_json: Option<String>,
+    ) -> anyhow::Result<()> {
+        let acting_as = acting_as_json.as_deref().map(parse_identity).transpose()?;
+        let mut client = self.connected_client().await?;
+        self.rt
+            .spawn(async move { client.set_admin_auth(admin_key, acting_as).await })
+            .await
+            .map_err(|e| e.into())
+    }
+}
+
+fn parse_identity(json: &str) -> anyhow::Result<UserIdentityAttributes> {
+    UserIdentityAttributes::try_from(serde_json::from_str::<serde_json::Value>(json)?)
 }
 
 fn parse_json_args(raw_args: HashMap<String, String>) -> BTreeMap<String, Value> {
@@ -384,7 +419,7 @@ mod tests {
     use convex::Value;
     use maplit::btreemap;
 
-    use crate::parse_json_args;
+    use crate::{parse_identity, parse_json_args};
 
     #[test]
     fn test_boolean_values_in_json_args() {
@@ -431,6 +466,42 @@ mod tests {
                 Value::String(String::from("c"))
             ]))
         );
+    }
+
+    #[test]
+    fn test_parse_identity() {
+        let identity = parse_identity(
+            r#"{"subject":"local-dev:dev@example.com","issuer":"harby-local-dev",
+                "tokenIdentifier":"harby-local-dev|local-dev:dev@example.com",
+                "email":"dev@example.com","name":"Dev","emailVerified":true}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            &*identity.token_identifier,
+            "harby-local-dev|local-dev:dev@example.com"
+        );
+        assert_eq!(identity.subject.as_deref(), Some("local-dev:dev@example.com"));
+        assert_eq!(identity.issuer.as_deref(), Some("harby-local-dev"));
+        assert_eq!(identity.email.as_deref(), Some("dev@example.com"));
+        assert_eq!(identity.name.as_deref(), Some("Dev"));
+        assert_eq!(identity.email_verified, Some(true));
+        assert!(identity.custom_claims.is_empty());
+    }
+
+    #[test]
+    fn test_parse_identity_derives_token_identifier() {
+        let identity = parse_identity(r#"{"issuer":"iss","subject":"sub","plan":"pro"}"#).unwrap();
+        assert_eq!(&*identity.token_identifier, "iss|sub");
+        assert_eq!(
+            identity.custom_claims.get("plan").map(String::as_str),
+            Some("\"pro\"")
+        );
+    }
+
+    #[test]
+    fn test_parse_identity_rejects_invalid_input() {
+        assert!(parse_identity(r#"{"name":"no subject"}"#).is_err());
+        assert!(parse_identity("not json").is_err());
     }
 
     #[test]

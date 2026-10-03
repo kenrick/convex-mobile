@@ -45,6 +45,9 @@ interface MobileConvexClient {
 
     [Async, Throws=ClientError]
     void set_auth_callback(AuthTokenProvider? provider);
+
+    [Async, Throws=ClientError]
+    void set_admin_auth(string admin_key, string? acting_as_json);
 };
 
 interface SubscriptionHandle {

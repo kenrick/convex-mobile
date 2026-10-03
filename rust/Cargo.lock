@@ -350,6 +350,7 @@ dependencies = [
  "async-trait",
  "aws-lc-rs",
  "convex",
+ "convex_sync_types",
  "futures",
  "log",
  "maplit",
