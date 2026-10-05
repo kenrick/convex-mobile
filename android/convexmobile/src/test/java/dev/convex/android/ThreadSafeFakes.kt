@@ -14,18 +14,25 @@ internal class ThreadSafeFakeFfiClient : MobileConvexClientInterface {
 
     val installedProvider: AuthTokenProvider? get() = provider.get()
 
+    /** Whether admin auth is in effect: each kind of auth replaces the others. */
+    @Volatile
+    var adminAuthActive = false
+        private set
+
     override suspend fun setAuthCallback(provider: AuthTokenProvider?) {
+        adminAuthActive = false
         this.provider.set(provider)
         provider?.fetchToken(false)
     }
 
     override suspend fun setAuth(token: String?) {
+        adminAuthActive = false
         provider.set(null)
     }
 
     override suspend fun setAdminAuth(adminKey: String, actingAsJson: String?) {
-        // Like the Rust client, admin auth replaces any installed token callback.
         provider.set(null)
+        adminAuthActive = true
     }
 
     override suspend fun query(name: String, args: Map<String, String>): String = "null"

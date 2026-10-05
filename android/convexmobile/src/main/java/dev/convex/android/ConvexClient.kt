@@ -423,18 +423,24 @@ class ConvexClientWithAuth<T>(
         val scope = coroutineScope
         return handler@{ token ->
             val self = client.get() ?: return@handler
-            val changed =
-                if (token != null) self.authBridge.update(token, session) else self.authBridge.endSession(session)
-            if (changed) scope.launch { client.get()?.syncAuthCallback() }
+            // The session the bridge is in after this push, if the push changed anything.
+            val changed = when {
+                token != null -> session.takeIf { self.authBridge.update(token, session) }
+                self.authBridge.endSession(session) -> session + 1
+                else -> null
+            } ?: return@handler
+            scope.launch { client.get()?.syncAuthCallback(changed) }
         }
     }
 
     /**
      * Brings the Rust client in line with the bridge after a pushed token: re-installing the
      * bridge makes the Rust client pull the new token right away, and an ended session removes it.
+     * Does nothing if a login, logout or admin auth has moved past [session] since.
      */
-    private suspend fun syncAuthCallback() {
+    private suspend fun syncAuthCallback(session: Long) {
         authMutex.withLock {
+            if (authBridge.currentSession != session) return
             try {
                 if (authBridge.hasToken) {
                     ffiClient.setAuthCallback(authBridge)

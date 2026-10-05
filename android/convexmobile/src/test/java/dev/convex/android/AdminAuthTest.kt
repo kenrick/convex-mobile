@@ -14,6 +14,7 @@ import strikt.assertions.isA
 import strikt.assertions.isEqualTo
 import strikt.assertions.isNotNull
 import strikt.assertions.isNull
+import strikt.assertions.isTrue
 
 class AdminAuthTest {
 
@@ -108,6 +109,21 @@ class AdminAuthTest {
         provider.pushToken("late-token")
         advanceUntilIdle()
         expectThat(ffiClient.installedProvider).isNull()
+    }
+
+    @Test
+    fun `a session the provider ended just before admin auth doesn't clear it`() = runTest {
+        val ffiClient = ThreadSafeFakeFfiClient()
+        val provider = ThreadSafeFakeAuthProvider()
+        val client = ConvexClientWithAuth("foo://bar", provider, this) { _, _, _ -> ffiClient }
+        client.login(ContextWrapper(null)).getOrThrow()
+
+        // The provider ends its session; removing the callback is scheduled, not yet run.
+        provider.pushToken(null)
+        client.setAdminAuth("admin-key", UserIdentity(tokenIdentifier = "t"))
+        advanceUntilIdle()
+
+        expectThat(ffiClient.adminAuthActive).isTrue()
     }
 
     @Serializable
