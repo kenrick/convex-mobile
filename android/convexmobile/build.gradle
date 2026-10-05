@@ -28,6 +28,7 @@ android {
         buildConfigField 'String', 'LIBRARY_VERSION', "\"${libraryVersion}\""
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        consumerProguardFiles 'consumer-rules.pro'
     }
 
     buildTypes {
