@@ -11,7 +11,7 @@ plugins {
 
 // Controls the version for Maven packaging and how the client identifies itself in requests.
 // harby's fork publishes fixed versions (see HARBY-PATCHES.md) instead of deriving one from git tags.
-def libraryVersion = '0.8.1-harby.1'
+def libraryVersion = '0.8.1-harby.2'
 
 android {
     namespace 'dev.convex.android'
