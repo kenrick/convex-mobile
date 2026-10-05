@@ -1,28 +1,30 @@
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+
 plugins {
     alias(libs.plugins.rust.android.gradle)
     alias(libs.plugins.android.library)
     alias(libs.plugins.jetbrains.kotlin.android)
-    id 'org.jetbrains.kotlin.plugin.serialization' version '1.9.0'
+    alias(libs.plugins.kotlin.serialization)
+    id 'maven-publish'
     id 'signing'
-    id 'com.palantir.git-version' version '3.1.0'
 }
 
-android.buildFeatures.buildConfig true
-
 // Controls the version for Maven packaging and how the client identifies itself in requests.
-def libraryVersion = gitVersion(prefix:'kotlin@')
+// harby's fork publishes fixed versions (see HARBY-PATCHES.md) instead of deriving one from git tags.
+def libraryVersion = '0.8.1-harby.1'
 
 android {
     namespace 'dev.convex.android'
-    compileSdk 34
+    compileSdk 36
 
     ndkVersion = "27.3.13750724"
 
+    buildFeatures {
+        buildConfig true
+    }
+
     defaultConfig {
         minSdk 26
-        targetSdk 34
-        versionCode 1
-        versionName libraryVersion
         buildConfigField 'String', 'LIBRARY_VERSION', "\"${libraryVersion}\""
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
@@ -38,14 +40,20 @@ android {
         sourceCompatibility JavaVersion.VERSION_1_8
         targetCompatibility JavaVersion.VERSION_1_8
     }
-    kotlinOptions {
-        jvmTarget = '1.8'
+    testOptions {
+        // android.util.Log is called on paths the JVM unit tests exercise.
+        unitTests.returnDefaultValues = true
     }
     publishing {
-        multipleVariants {
-            allVariants()
-            withJavadocJar()
+        singleVariant('release') {
+            withSourcesJar()
         }
+    }
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget = JvmTarget.JVM_1_8
     }
 }
 
@@ -54,12 +62,12 @@ cargo {
     libname = "convexmobile"
     targets = ["arm64", "arm", "x86_64"]
     profile = "release"
+    extraCargoBuildArguments = ['--locked']
+    pythonCommand = "python3"
+    // The plugin links with 16 KB page alignment itself (for NDK <= 27):
+    // https://developer.android.com/guide/practices/page-sizes#other-build-systems
 
     exec { spec, toolchain ->
-        // Support 16KB page sizes
-        // https://developer.android.com/guide/practices/page-sizes#other-build-systems
-        spec.environment("RUST_ANDROID_GRADLE_CC_LINK_ARG", "-Wl,-z,max-page-size=16384,-soname,lib${libname}.so")
-
         // Required env vars for aws-lc-rs to compile its aws-lc dependency w/ CMake.
         def ndkRoot = new File(android.sdkDirectory, "ndk/${android.ndkVersion}")
         def osName = System.getProperty("os.name").toLowerCase(Locale.ROOT)
@@ -70,6 +78,14 @@ cargo {
         def sysroot = new File(ndkRoot, "toolchains/llvm/prebuilt/${hostTag}/sysroot")
         spec.environment('ANDROID_NDK_ROOT', ndkRoot.absolutePath)
         spec.environment('BINDGEN_EXTRA_CLANG_ARGS', "--sysroot ${sysroot.absolutePath}")
+
+        // Keep build-machine paths out of the shipped library (panic and log messages embed source
+        // paths), as rust/build-ios.sh does.
+        def cargoHome = System.getenv('CARGO_HOME') ?: "${System.getProperty('user.home')}/.cargo"
+        def rustDir = file('../../rust').canonicalPath
+        def rustSysroot = providers.exec { commandLine 'rustc', '--print', 'sysroot' }.standardOutput.asText.get().trim()
+        spec.environment('RUSTFLAGS', "--remap-path-prefix=${cargoHome}=/cargo --remap-path-prefix=${rustSysroot}=/rust --remap-path-prefix=${rustDir}=/convex-mobile/rust")
+        spec.environment('AWS_LC_SYS_CFLAGS', "-ffile-prefix-map=${cargoHome}=/cargo -ffile-prefix-map=${rustDir}=/convex-mobile/rust")
     }
 }
 
@@ -87,13 +103,13 @@ tasks.whenTaskAdded { task ->
 tasks.register("generateUniFFIBinary", Exec) {
     workingDir "${project.projectDir}/../../rust"
     commandLine 'cargo'
-    args 'build', '--bin', 'uniffi-bindgen', '--no-default-features', '--features=uniffi/cli'
+    args 'build', '--locked', '--bin', 'uniffi-bindgen', '--no-default-features', '--features=uniffi/cli'
 }
 
 android.libraryVariants.all { variant ->
     def t = tasks.register("generate${variant.name.capitalize()}UniFFIBindings", Exec) {
         workingDir "${project.projectDir}/../../rust"
-        commandLine 'cargo', 'run', '--bin', 'uniffi-bindgen', '--no-default-features', '--features=uniffi/cli', '--', 'generate', '--library', "${project.layout.buildDirectory.asFile.get().path}/rustJniLibs/android/arm64-v8a/libconvexmobile.so", '--language', 'kotlin', '--out-dir', "${project.layout.buildDirectory.asFile.get().path}/generated/source/uniffi/${variant.name}/java"
+        commandLine 'cargo', 'run', '--locked', '--bin', 'uniffi-bindgen', '--no-default-features', '--features=uniffi/cli', '--', 'generate', '--library', "${project.layout.buildDirectory.asFile.get().path}/rustJniLibs/android/arm64-v8a/libconvexmobile.so", '--language', 'kotlin', '--out-dir', "${project.layout.buildDirectory.asFile.get().path}/generated/source/uniffi/${variant.name}/java"
         dependsOn 'generateUniFFIBinary'
     }
     def sourceSet = variant.sourceSets.find { it.name == variant.name }
@@ -108,8 +124,8 @@ publishing {
             version = libraryVersion
             pom {
                 name = 'Convex for Android'
-                description = 'Android client library for building apps with convex.dev'
-                url = 'https://www.convex.dev/'
+                description = 'Android client library for building apps with convex.dev, with harby\'s patches (HARBY-PATCHES.md)'
+                url = 'https://github.com/kenrick/convex-mobile'
 
                 licenses {
                     license {
@@ -134,44 +150,49 @@ publishing {
                 }
 
                 scm {
-                    connection = 'scm:git:git://github.com/get-convex/convex-mobile.git'
-                    developerConnection = 'scm:git:ssh://git@github.com:get-convex/convex-mobile.git'
-                    url = 'https://www.convex.dev/'
+                    connection = 'scm:git:https://github.com/kenrick/convex-mobile.git'
+                    url = 'https://github.com/kenrick/convex-mobile/tree/harby/0.8.1-patched'
                 }
             }
 
             afterEvaluate {
                 from components.release
             }
-
-            repositories {
-                maven {
-                    name = 'zipRepo'
-                    url = "${project.layout.buildDirectory.asFile.get().path}/repo"
-                }
-            }
         }
     }
 
+    repositories {
+        // The Maven repository committed in this fork, which apps resolve by commit-pinned URL.
+        maven {
+            name = 'forkRepo'
+            url = rootProject.layout.projectDirectory.dir('../maven')
+        }
+        maven {
+            name = 'zipRepo'
+            url = layout.buildDirectory.dir('repo')
+        }
+    }
 }
 
 signing {
+    // Signs only when a signatory is configured (upstream's Maven Central releases).
+    required = false
     sign publishing.publications
 }
 
 dependencies {
-    implementation libs.androidx.core.ktx
-    implementation libs.androidx.appcompat
-    implementation libs.material
-    testImplementation libs.junit
-    androidTestImplementation libs.androidx.junit
-    androidTestImplementation libs.androidx.espresso.core
+    // Flow and kotlinx.serialization types are part of this library's API, and its inline functions
+    // compile into the caller.
+    api libs.kotlinx.coroutines.core
+    api libs.kotlinx.serialization.json
     // Have to use string dependency reference for JNA due to https://github.com/gradle/gradle/issues/21267
-    implementation "net.java.dev.jna:jna:5.14.0@aar"
-    implementation libs.kotlinx.serialization.json
+    // The generated bindings expose JNA types (Pointer) in public signatures.
+    api "net.java.dev.jna:jna:${libs.versions.jna.get()}@aar"
+    testImplementation libs.junit
     testImplementation libs.kotlinx.coroutines.test
-    androidTestImplementation libs.kotlinx.coroutines.test
     testImplementation(libs.strikt.core)
+    androidTestImplementation libs.androidx.junit
+    androidTestImplementation libs.kotlinx.coroutines.test
 }
 
 

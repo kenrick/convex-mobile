@@ -1,30 +1,26 @@
 [versions]
-agp = "8.4.2"
-kotlin = "1.9.0"
-coreKtx = "1.13.1"
+agp = "8.13.2"
+kotlin = "2.2.21"
 junit = "4.13.2"
 junitVersion = "1.2.1"
-espressoCore = "3.6.1"
-appcompat = "1.7.0"
-kotlinxCoroutinesTest = "1.9.0-RC"
-material = "1.12.0"
-rustAndroid = "0.9.4"
-kotlinxSerializationJson = "1.6.3"
+kotlinxCoroutines = "1.10.2"
+rustAndroid = "0.10.0"
+kotlinxSerializationJson = "1.9.0"
+# 5.17.0 is the first JNA whose libjnidispatch.so is 16 KB aligned on every ABI (5.14.0's x86_64
+# and armeabi-v7a builds are 4 KB aligned).
+jna = "5.17.0"
 striktCore = "0.34.0"
 
 [libraries]
-androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junitVersion" }
-androidx-espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version.ref = "espressoCore" }
-androidx-appcompat = { group = "androidx.appcompat", name = "appcompat", version.ref = "appcompat" }
-kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "kotlinxCoroutinesTest" }
-material = { group = "com.google.android.material", name = "material", version.ref = "material" }
+kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "kotlinxCoroutines" }
+kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "kotlinxCoroutines" }
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinxSerializationJson" }
 strikt-core = { module = "io.strikt:strikt-core", version.ref = "striktCore" }
 
 [plugins]
 android-library = { id = "com.android.library", version.ref = "agp" }
 jetbrains-kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
+kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 rust-android-gradle = { id = "org.mozilla.rust-android-gradle.rust-android", version.ref = "rustAndroid" }
-

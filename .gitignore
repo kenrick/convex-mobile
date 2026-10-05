@@ -1,2 +1,7 @@
 .DS_Store
 target/
+android/.gradle/
+android/.kotlin/
+android/build/
+android/convexmobile/build/
+android/local.properties

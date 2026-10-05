@@ -14,6 +14,7 @@ class FakeFfiClient : MobileConvexClientInterface {
     val actions = mutableMapOf<String, Map<String, String>>()
     val mutations = mutableMapOf<String, Map<String, String>>()
     var receivedAuthProvider: AuthTokenProvider? = null
+    var receivedAdminAuth: AdminAuth? = null
 
     override suspend fun action(name: String, args: Map<String, String>): String {
         actions[name] = args
@@ -35,6 +36,12 @@ class FakeFfiClient : MobileConvexClientInterface {
 
     override suspend fun setAuthCallback(provider: AuthTokenProvider?) {
         receivedAuthProvider = provider
+    }
+
+    override suspend fun setAdminAuth(adminKey: String, actingAsJson: String?) {
+        // Like the Rust client, admin auth replaces any installed token callback.
+        receivedAuthProvider = null
+        receivedAdminAuth = AdminAuth(adminKey, actingAsJson)
     }
 
     override suspend fun subscribe(
@@ -83,3 +90,5 @@ class FakeFfiClient : MobileConvexClientInterface {
 }
 
 data class CallKey(val name: String, val args: Map<String, String>)
+
+data class AdminAuth(val adminKey: String, val actingAsJson: String?)
