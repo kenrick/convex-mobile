@@ -3,6 +3,7 @@ agp = "8.13.2"
 kotlin = "2.2.21"
 junit = "4.13.2"
 junitVersion = "1.2.1"
+testRunner = "1.6.2"
 kotlinxCoroutines = "1.10.2"
 rustAndroid = "0.10.0"
 kotlinxSerializationJson = "1.9.0"
@@ -14,6 +15,7 @@ striktCore = "0.34.0"
 [libraries]
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junitVersion" }
+androidx-test-runner = { group = "androidx.test", name = "runner", version.ref = "testRunner" }
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "kotlinxCoroutines" }
 kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "kotlinxCoroutines" }
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinxSerializationJson" }
