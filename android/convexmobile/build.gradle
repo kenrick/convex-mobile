@@ -96,7 +96,10 @@ cargo {
 }
 
 tasks.whenTaskAdded { task ->
-    if ((task.name == 'generateDebugUniFFIBindings' || task.name == 'generateReleaseUniFFIBindings')) {
+    // The plugin adds build/rustJniLibs to the jniLibs source set but leaves ordering to the build:
+    // without this, a clean build packages the AAR before cargo has written the libraries.
+    if ((task.name == 'generateDebugUniFFIBindings' || task.name == 'generateReleaseUniFFIBindings')
+            || (task.name == 'mergeDebugJniLibFolders' || task.name == 'mergeReleaseJniLibFolders')) {
         task.dependsOn 'cargoBuild'
     }
     if (task.name == 'compileDebugKotlin') {
