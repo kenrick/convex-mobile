@@ -9,7 +9,7 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>dev.convex</groupId>
   <artifactId>android-convexmobile</artifactId>
-  <version>0.8.1-harby.1</version>
+  <version>0.8.1-harby.2</version>
   <packaging>aar</packaging>
   <name>Convex for Android</name>
   <description>Android client library for building apps with convex.dev, with harby's patches (HARBY-PATCHES.md)</description>

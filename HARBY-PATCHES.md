@@ -21,11 +21,11 @@ dependencyResolutionManagement {
 
 // build.gradle.kts
 dependencies {
-    implementation("dev.convex:android-convexmobile:0.8.1-harby.1")
+    implementation("dev.convex:android-convexmobile:0.8.1-harby.2")
 }
 ```
 
-`<commit>` is the tip of `harby/0.8.1-patched` at the time of pinning. `exclusiveContent` keeps Gradle from asking Maven Central for the fork's version and the fork's repository for anything else. No `@aar` or `isTransitive` is needed: the Gradle module metadata selects the AAR and brings its dependencies.
+`<commit>` is the tip of `harby/0.8.1-patched` at the time of pinning. A version's content never changes, so every published change gets a new version; use `0.8.1-harby.2` or later (`0.8.1-harby.1`, at `26cf138`, has the race fixed in `221813d`). `exclusiveContent` keeps Gradle from asking Maven Central for the fork's version and the fork's repository for anything else. No `@aar` or `isTransitive` is needed: the Gradle module metadata selects the AAR and brings its dependencies.
 
 ## Rust patches (also in the iOS XCFramework)
 
@@ -47,12 +47,13 @@ dependencies {
 | `834bd02` | The sources jar carries the generated bindings; `androidx.test:runner` for the instrumented tests. | none |
 | `e4d0923` | Build the native libraries before packaging them: a build from a clean checkout made an AAR without any `libconvexmobile.so` (270 KB), because nothing ordered `cargoBuild` before `merge*JniLibFolders`. | none |
 | `7ceb2f2` | Ship R8 keep rules (`consumer-rules.pro`, as the AAR's `proguard.txt`) for JNA and the bindings. See below. | none |
+| `221813d` | A pushed token's follow-up (re-installing or removing the auth callback) runs only if the session is still the one the push left it in. See the auth notes below. | none |
 
 ### Build (`5d4778d`)
 
 - AGP 8.13.2, Gradle 8.14.5 (wrapper with checksum), Kotlin 2.2.21, rust-android-gradle 0.10.0 (AGP 8 / Gradle 9 support; it links with `-z max-page-size=16384` itself for NDK ≤ 27, so the manual link-arg override is gone). compileSdk 36; minSdk stays 26; JVM target stays 1.8. The library's own build doesn't need AGP 9: rust-android-gradle uses the variant API AGP 9 removed.
 - Published dependencies: appcompat, material and core-ktx are gone (unused). `kotlinx-coroutines-core` 1.10.2 and `kotlinx-serialization-json` 1.9.0 are `api`, because `Flow` and serialization types are in the API and the inline functions compile into callers. JNA 5.14.0 → 5.17.0, also `api` (the generated bindings expose `Pointer`): 5.14.0's x86_64 and armeabi-v7a `libjnidispatch.so` are 4 KB aligned, 5.17.0's are 16 KB aligned on every ABI. All are lower bounds that a newer consumer resolves upward.
-- A fixed version (`0.8.1-harby.1`) instead of one derived from git tags; a single release variant with a sources jar; signing only when a signatory is configured; a `forkRepo` repository at `../maven`.
+- A fixed version (`libraryVersion`, `0.8.1-harby.N`) instead of one derived from git tags; a single release variant with a sources jar; signing only when a signatory is configured; a `forkRepo` repository at `../maven`.
 - cargo runs with `--locked` and remaps build paths out of the binary, as `build-ios.sh` does.
 
 ### Subscriptions (`199e9f0`)
@@ -75,7 +76,7 @@ convex-swift's unaligned `$integer` / `$float` load (its `42f1bbe`) has no Kotli
   - A `logout()` that completes during `login()` wins: the login returns a `CancellationException` failure and leaves the client logged out. Before, it installed its token after the logout.
   - A late token, or `null`, pushed through an earlier session's `onIdToken` no longer re-authenticates, or logs out, the current session.
   - Unchanged tokens aren't re-installed.
-  - Pushed tokens reach the bridge in the order the provider pushes them; only re-installing the callback is asynchronous.
+  - Pushed tokens reach the bridge in the order the provider pushes them; only re-installing or removing the callback is asynchronous, and that step does nothing if a login, logout or admin auth has changed the session since (`221813d`; before, a provider's `null` pushed just before `setAdminAuth` removed the admin auth).
 - A failing forced refresh keeps the current token. Before, it handed the socket `null`, silently signing it out while `authState` said `Authenticated`.
 - `fetchToken` never throws, except for its own cancellation. uniffi turns any other exception into a panic in the convex-rs worker, which stops the client for good. An `Error`, such as the `NotImplementedError` of a provider without `loginFromCache`, was uncaught on uniffi's `GlobalScope` coroutine and crashed the process on the first reconnect.
 - `login()` / `loginFromCache()` no longer leave `authState` at `AuthLoading` when the provider throws or the call is cancelled. Exceptions become the failed `Result`; errors, such as the documented `NotImplementedError`, still propagate.
@@ -93,7 +94,7 @@ Neither JNA's AAR nor upstream's carries consumer rules, so an app that minifies
 
 ## Tests
 
-- `cd android && ./gradlew :convexmobile:testDebugUnitTest` runs 40 JVM tests: upstream's 13, plus `SubscriptionDeliveryTest`, `AuthConcurrencyTest`, `ClientReleaseTest`, `AdminAuthTest` and `JsonHelpersTest`. 16 of the 27 new tests fail on the client before these patches (given a pass-through `setAdminAuth` so they compile). `AuthConcurrencyTest`'s storm test passes on both (without a race detector it finds no race), as does the delivery race test.
+- `cd android && ./gradlew :convexmobile:testDebugUnitTest` runs 41 JVM tests: upstream's 13, plus `SubscriptionDeliveryTest`, `AuthConcurrencyTest`, `ClientReleaseTest`, `AdminAuthTest` and `JsonHelpersTest`. 17 of the 28 new tests fail on the client before these patches (given a pass-through `setAdminAuth` so they compile). `AuthConcurrencyTest`'s storm test passes on both (without a race detector it finds no race), as does the delivery race test.
 - Instrumented: `./gradlew :convexmobile:assembleDebugAndroidTest`, then on a device `am instrument -w -e class dev.convex.android.ConvexClientWithAuthTest dev.convex.android.test/androidx.test.runner.AndroidJUnitRunner`. Upstream's 11 tests pass. `ConvexClientInstrumentationTest` targets upstream's shared cloud test deployment, so it is skipped, like convex-swift's `IntegrationTests`.
 - `cd rust && cargo test --locked --lib` runs 7 tests.
 - End to end, from a scratch app on Kotlin 2.4.20 / AGP 9.4.1 / kotlinx.serialization 1.11.0 / compileSdk 36 / minSdk 28 that resolves the published AAR, on an API 36 emulator against a local anonymous Convex and harby's web server (`adb reverse`): an unauthenticated `workspaces:mySpaces` subscription returns `[]`; `GET /auth/dev-token` then `setAdminAuth` makes the same live subscription return the dev user's space; `logout()` takes it back to `[]`. A query with invalid arguments arrives as a `ServerError` value. The flow passes in a debug build and in a minified release build.
@@ -108,24 +109,24 @@ cd android
 rm -rf ../maven && ./gradlew :convexmobile:publishReleasePublicationToForkRepoRepository
 ```
 
-That writes `maven/dev/convex/android-convexmobile/<version>/`: the AAR (arm64-v8a, armeabi-v7a, x86_64), POM, Gradle module metadata, sources jar, and their md5/sha1/sha256/sha512 checksums, plus `maven-metadata.xml`. Bump `libraryVersion` in `android/convexmobile/build.gradle` for every published change, so that one version never has two contents. Commit `maven/`, push, then re-pin the app's URL.
+`maven/` holds only the current version; earlier ones stay reachable at the commits that published them. Publishing writes `maven/dev/convex/android-convexmobile/<version>/`: the AAR (arm64-v8a, armeabi-v7a, x86_64), POM, Gradle module metadata, sources jar, and their md5/sha1/sha256/sha512 checksums, plus `maven-metadata.xml`. Bump `libraryVersion` in `android/convexmobile/build.gradle` for every published change, so that one version never has two contents. Commit `maven/`, push, then re-pin the app's URL.
 
 A clean build from a fresh clone at a different path reproduces the committed AAR, POM, module and sources jar byte for byte; only `maven-metadata.xml` differs, by its `lastUpdated` timestamp.
 
-SHA-256 of `0.8.1-harby.1`, built from `7ceb2f2` (each file also has `.sha256` and the other checksums next to it):
+SHA-256 of `0.8.1-harby.2`, built from `42c7c92` (each file also has `.sha256` and the other checksums next to it):
 
 ```
-87d0a5da1565e16bf561a54a3052b579f7e11e19aa355f56179fc5fa8f17eb00  android-convexmobile-0.8.1-harby.1.aar
-c4e4244018c928762e7f20ed48e7d30d6f5d9f98fcdae16c7758718aad5cbe15  android-convexmobile-0.8.1-harby.1.pom
-0257bb0f520de80a90c0b550229b341d6313c30be7511026f98c3b5f2a318f6b  android-convexmobile-0.8.1-harby.1.module
-ed3b791bd517b1a5449c5b22693e48aeb1895feaae653bd1d36b253797539a73  android-convexmobile-0.8.1-harby.1-sources.jar
+c615b5413e25590f5e6a63fdb454ca2f67cd70e4717f560948789644cef29ad1  android-convexmobile-0.8.1-harby.2.aar
+1ed9b7d7e1405004d0e78f9ea785cd1a3dc3faf4653e255285f84cc351bf7559  android-convexmobile-0.8.1-harby.2.pom
+bfba03123f124636776ca91923ba95edbdf76203445b9c4df52762427c0ff647  android-convexmobile-0.8.1-harby.2.module
+5b2e7933207e94f86ebb2445ab9a3d0ccf97211f89ae599e8d4e58d735af5b16  android-convexmobile-0.8.1-harby.2-sources.jar
 ```
 
 ## Size
 
 | | AAR | arm64-v8a `.so` | armeabi-v7a `.so` | x86_64 `.so` |
 |---|---|---|---|---|
-| 0.8.1-harby.1 | 7.65 MB | 5.76 MB (2.62 MB gzip -9) | 3.55 MB (1.97 MB) | 6.91 MB (2.77 MB) |
+| 0.8.1-harby.2 | 7.65 MB | 5.76 MB (2.62 MB gzip -9) | 3.55 MB (1.97 MB) | 6.91 MB (2.77 MB) |
 | upstream 0.8.0 | 7.89 MB | 5.96 MB | 3.66 MB | 7.20 MB |
 
 The `.so` files in the AAR are stripped by AGP (cargo's release outputs are 7.97, 5.16 and 8.47 MB) and 16 KB aligned (`LOAD` segments aligned to `0x4000`; `zipalign -c -P 16` passes on an APK). JNA adds about 0.12-0.17 MB of `libjnidispatch.so` per ABI. JNA's AAR also ships armeabi, mips, mips64 and x86 builds, so apps should set `abiFilters`.

@@ -3,7 +3,7 @@
   "component": {
     "group": "dev.convex",
     "module": "android-convexmobile",
-    "version": "0.8.1-harby.1",
+    "version": "0.8.1-harby.2",
     "attributes": {
       "org.gradle.status": "release"
     }
@@ -67,13 +67,13 @@
       ],
       "files": [
         {
-          "name": "android-convexmobile-0.8.1-harby.1.aar",
-          "url": "android-convexmobile-0.8.1-harby.1.aar",
-          "size": 7649744,
-          "sha512": "97a85a2c4ae7a8d91499c39e8b8d7b65cb9d714802b6c0f09a0af27df500f62dc29ddab5db67865a40f31891be11a35ace2a010652bbe940de79bc424d8c6680",
-          "sha256": "87d0a5da1565e16bf561a54a3052b579f7e11e19aa355f56179fc5fa8f17eb00",
-          "sha1": "ba8671aeae6c08a76ee07a14d7d3a7f1c644d7ef",
-          "md5": "c776a44c947440487ac04c0aa23e678a"
+          "name": "android-convexmobile-0.8.1-harby.2.aar",
+          "url": "android-convexmobile-0.8.1-harby.2.aar",
+          "size": 7650062,
+          "sha512": "36d0909936001bdd4c58f8d1b5da01027586a19d701553e5378704780995c132a8ba55eeab943d52bda7a58f55b758a4990b6ebb7e0a78a3596767abca86ee70",
+          "sha256": "c615b5413e25590f5e6a63fdb454ca2f67cd70e4717f560948789644cef29ad1",
+          "sha1": "9e9b73a805e410c2490c1a82398d851197f53155",
+          "md5": "c7d5e0bde98a2ef088026c67f94cb9fa"
         }
       ]
     },
@@ -130,13 +130,13 @@
       ],
       "files": [
         {
-          "name": "android-convexmobile-0.8.1-harby.1.aar",
-          "url": "android-convexmobile-0.8.1-harby.1.aar",
-          "size": 7649744,
-          "sha512": "97a85a2c4ae7a8d91499c39e8b8d7b65cb9d714802b6c0f09a0af27df500f62dc29ddab5db67865a40f31891be11a35ace2a010652bbe940de79bc424d8c6680",
-          "sha256": "87d0a5da1565e16bf561a54a3052b579f7e11e19aa355f56179fc5fa8f17eb00",
-          "sha1": "ba8671aeae6c08a76ee07a14d7d3a7f1c644d7ef",
-          "md5": "c776a44c947440487ac04c0aa23e678a"
+          "name": "android-convexmobile-0.8.1-harby.2.aar",
+          "url": "android-convexmobile-0.8.1-harby.2.aar",
+          "size": 7650062,
+          "sha512": "36d0909936001bdd4c58f8d1b5da01027586a19d701553e5378704780995c132a8ba55eeab943d52bda7a58f55b758a4990b6ebb7e0a78a3596767abca86ee70",
+          "sha256": "c615b5413e25590f5e6a63fdb454ca2f67cd70e4717f560948789644cef29ad1",
+          "sha1": "9e9b73a805e410c2490c1a82398d851197f53155",
+          "md5": "c7d5e0bde98a2ef088026c67f94cb9fa"
         }
       ]
     },
@@ -150,13 +150,13 @@
       },
       "files": [
         {
-          "name": "android-convexmobile-0.8.1-harby.1-sources.jar",
-          "url": "android-convexmobile-0.8.1-harby.1-sources.jar",
-          "size": 28971,
-          "sha512": "c17ea753d08453b37e2ebcf1d642ead2d4854cd316f059cc2fd04a50d29832ec49049f4d178d20c66f66ade6616b2e34a95e8d2197974f45e6a52762cc7b918e",
-          "sha256": "ed3b791bd517b1a5449c5b22693e48aeb1895feaae653bd1d36b253797539a73",
-          "sha1": "b1625784bbb43f9deec301d5815c1eed2a602e2c",
-          "md5": "5756a95d50316de263eeaa328ef56c79"
+          "name": "android-convexmobile-0.8.1-harby.2-sources.jar",
+          "url": "android-convexmobile-0.8.1-harby.2-sources.jar",
+          "size": 29070,
+          "sha512": "36e910f725829c64bc89d65bbf2b058231f13422f0bbd0128185b95e60235d0554236a843840f47c5d600972ddac16c3f6328d1e4b2f4befd4dafbed50ee1072",
+          "sha256": "5b2e7933207e94f86ebb2445ab9a3d0ccf97211f89ae599e8d4e58d735af5b16",
+          "sha1": "cb0f170ea2b84e1eeb0fdf5cbca5dad0fe97154c",
+          "md5": "c4b5fc1a42fdd712f1444d4945594607"
         }
       ]
     }
