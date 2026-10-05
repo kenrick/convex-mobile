@@ -48,6 +48,9 @@ internal fun List<*>.toJsonElement(): JsonElement {
 @PublishedApi
 internal fun Any?.toJsonElement(): JsonElement {
     return when (this) {
+        // Already JSON, e.g. arguments encoded with kotlinx.serialization: sent as is, so its
+        // numbers are JSON numbers (float64 in Convex).
+        is JsonElement -> this
         is Map<*, *> -> this.toJsonElement()
         is List<*> -> this.toJsonElement()
         is String -> JsonPrimitive(this)

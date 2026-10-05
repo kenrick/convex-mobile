@@ -4,12 +4,14 @@ import android.content.Context
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.SendChannel
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -49,6 +51,9 @@ typealias ConvexNum = Contextual
  *
  * Consumers of this client should use Kotlin's JSON serialization to handle data sent to/from the
  * Convex backend.
+ *
+ * Each client owns a WebSocket and a Rust runtime, so an app should create one and share it. It is
+ * safe to use from any thread.
  */
 open class ConvexClient(
     deploymentUrl: String,
@@ -81,7 +86,11 @@ open class ConvexClient(
      * [Flow] of [Result]s containing [T].
      *
      * If there is an error generating [T], the [Result] will contain either a [ConvexError] (for
-     * application specific errors) or a [ServerError].
+     * application specific errors), a [ServerError], or an [InternalError] when the result doesn't
+     * decode as [T]. Errors are values: the subscription stays open and delivers the next result
+     * when the query's data changes. The [Flow] only fails if the subscription can't be started.
+     *
+     * Results are conflated: a collector that falls behind skips to the newest result.
      *
      * The upstream Convex subscription will be canceled if whatever is subscribed to the [Flow]
      * stops listening.
@@ -90,42 +99,28 @@ open class ConvexClient(
      */
     inline fun <reified T> subscribe(
         name: String, args: Map<String, Any?>? = null
+    ): Flow<Result<T>> = subscribeDecoding(name, args) { value -> jsonApi.decodeFromString<T>(value) }
+
+    @PublishedApi
+    internal fun <T> subscribeDecoding(
+        name: String,
+        args: Map<String, Any?>?,
+        decode: (String) -> T
     ): Flow<Result<T>> = callbackFlow {
-        val subscription = ffiClient.subscribe(
-            name,
-            args?.mapValues { it.value.toJsonElement().toString() } ?: mapOf(),
-            object : QuerySubscriber {
-                override fun onUpdate(value: String) {
-                    try {
-                        val data = jsonApi.decodeFromString<T>(value)
-                        trySend(Result.success(data))
-                    } catch (e: Throwable) {
-                        // Don't catch when https://github.com/mozilla/uniffi-rs/issues/2194 is fixed.
-                        // Ideally any unchecked exception that happens here goes uncaught and triggers
-                        // a crash, as it's likely a developer error related to mishandling the JSON
-                        // data.
-                        val message = "error handling data from FFI"
-                        Log.e("QuerySubscriber.onUpdate", message, e)
-                        cancel(message, e)
-                    }
-                }
-
-                override fun onError(message: String, value: String?) {
-                    if (value == null) {
-                        // This is a server error of some sort.
-                        trySend(Result.failure(ServerError(message)))
-                    } else {
-                        // An application specific error thrown in a Convex backend function.
-                        trySend(Result.failure(ConvexError(message, value)))
-                    }
-
-                }
-            })
+        val subscription = try {
+            ffiClient.subscribe(
+                name,
+                args?.mapValues { it.value.toJsonElement().toString() } ?: mapOf(),
+                SubscriptionAdapter(channel, decode)
+            )
+        } catch (e: ClientException) {
+            throw e.toError()
+        }
 
         awaitClose {
             subscription.cancel()
         }
-    }
+    }.buffer(Channel.CONFLATED)
 
     /**
      * Executes the action with the given [name] and [args] and returns the result.
@@ -207,6 +202,43 @@ open class ConvexClient(
     @JvmName("voidMutation")
     suspend fun mutation(name: String, args: Map<String, Any?>? = null) {
         mutation<Unit?>(name = name, args = args)
+    }
+}
+
+/**
+ * Hands a subscription's results to its [Flow]'s channel.
+ *
+ * The Rust client calls these methods on its own threads, also after the [Flow] was cancelled.
+ * They must not throw: uniffi turns an exception into a panic that silently ends the
+ * subscription. So every result, decoding failures included, becomes a value sent to the channel,
+ * and results that arrive after the channel closed are dropped (get-convex/convex-mobile#24; its
+ * crash is a collector rethrowing such a value, see SubscriptionDeliveryTest).
+ */
+internal class SubscriptionAdapter<T>(
+    private val channel: SendChannel<Result<T>>,
+    private val decode: (String) -> T
+) : QuerySubscriber {
+    override fun onUpdate(value: String) {
+        if (channel.isClosedForSend) return
+        val result = try {
+            Result.success(decode(value))
+        } catch (e: Throwable) {
+            Result.failure(
+                InternalError(
+                    "Failed to decode JSON, ensure you're using types compatible with Convex in your return value",
+                    e
+                )
+            )
+        }
+        channel.trySend(result)
+    }
+
+    override fun onError(message: String, value: String?) {
+        if (channel.isClosedForSend) return
+        // A value is an application specific error thrown in a Convex backend function; without
+        // one it's a server error of some sort.
+        val error = if (value == null) ServerError(message) else ConvexError(message, value)
+        channel.trySend(Result.failure(error))
     }
 }
 
