@@ -2,8 +2,12 @@ package dev.convex.android
 
 import android.content.Context
 import android.util.Log
+import java.lang.ref.WeakReference
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.SendChannel
 import kotlinx.coroutines.channels.awaitClose
@@ -60,18 +64,13 @@ open class ConvexClient(
     ffiClientFactory: (deploymentUrl: String, clientId: String, webSocketStateSubscriber: WebSocketStateSubscriber?) -> MobileConvexClientInterface = ::MobileConvexClient
 ) {
     private val _webSocketStateFlow = MutableStateFlow(WebSocketState.CONNECTING)
-    private val webSocketStateSubscriber = object : WebSocketStateSubscriber {
-        override fun onStateChange(state: WebSocketState) {
-            _webSocketStateFlow.value = state
-        }
-    }
 
     @PublishedApi
     internal val ffiClient =
         ffiClientFactory(
             deploymentUrl,
             "kotlin-${BuildConfig.LIBRARY_VERSION}",
-            webSocketStateSubscriber
+            WebSocketStateAdapter(_webSocketStateFlow)
         )
 
     /**
@@ -243,9 +242,28 @@ internal class SubscriptionAdapter<T>(
 }
 
 /**
+ * Publishes the Rust client's WebSocket state.
+ *
+ * The Rust client keeps this object for as long as it lives, so it must not reference the
+ * [ConvexClient]: through uniffi's handle map that would keep a discarded client, its Rust runtime
+ * and its WebSocket alive until the process exits.
+ */
+private class WebSocketStateAdapter(private val state: MutableStateFlow<WebSocketState>) :
+    WebSocketStateSubscriber {
+    override fun onStateChange(state: WebSocketState) {
+        this.state.value = state
+    }
+}
+
+/**
  * Like [ConvexClient], but supports integration with an authentication provider via [AuthProvider].
  *
+ * The client calls the [AuthProvider] from arbitrary threads, sometimes concurrently (for example a
+ * token refresh requested by the Rust client while [login] runs), so providers must be thread-safe.
+ *
  * @param T the data returned from the [AuthProvider] upon successful authentication
+ * @param coroutineScope where tokens the [AuthProvider] pushes to `onIdToken` are handed to the
+ *   Rust client
  */
 class ConvexClientWithAuth<T>(
     deploymentUrl: String,
@@ -254,19 +272,33 @@ class ConvexClientWithAuth<T>(
     ffiClientFactory: (deploymentUrl: String, clientId: String, webSocketSocketStateSubscriber: WebSocketStateSubscriber?) -> MobileConvexClientInterface = ::MobileConvexClient
 ) : ConvexClient(deploymentUrl, ffiClientFactory) {
     private val _authState = MutableStateFlow<AuthState<T>>(AuthState.Unauthenticated())
-    private var authBridge: AuthTokenProviderBridge? = null
+
+    /**
+     * The one [AuthTokenProvider] this client ever hands to the Rust client, so the object the Rust
+     * client calls into is never swapped while a call is in flight. It refreshes tokens through
+     * the [AuthProvider] when the Rust client asks for a fresh one (on reconnect, or after the
+     * backend rejected a token).
+     */
+    private val authBridge = AuthTokenProviderBridge(refreshThrough(WeakReference(this), authProvider))
+
+    /**
+     * Orders installing and removing the bridge with the session checks that decide them, so a
+     * login, a logout and a pushed token can't interleave into a state none of them meant.
+     */
+    private val authMutex = Mutex()
 
     /**
      * A [Flow] of [AuthState] that represents the authentication state of this client instance.
      */
-    val authState: StateFlow<AuthState<T>> = _authState
+    val authState: StateFlow<AuthState<T>> = _authState.asStateFlow()
 
     /**
      * Triggers a UI driven login flow and updates the [authState].
      *
      * The [authState] is set to [AuthState.AuthLoading] immediately upon calling this method and
      * will change to either [AuthState.Authenticated] or [AuthState.Unauthenticated] depending on
-     * the result.
+     * the result. A [logout] that completes while the login flow is still running wins: the login
+     * then fails with a [CancellationException] and leaves the client logged out.
      */
     suspend fun login(context: Context): Result<T> =
         loginWithStrategy { cb -> authProvider.login(context, cb) }
@@ -282,9 +314,7 @@ class ConvexClientWithAuth<T>(
      *
      * The [authState] is set to [AuthState.AuthLoading] immediately upon calling this method and
      * will change to either [AuthState.Authenticated] or [AuthState.Unauthenticated] depending on
-     * the result.
-     *
-     * @throws NotImplementedError if the [AuthProvider] doesn't support [loginFromCache]
+     * the result. Like [login], it loses to a [logout] that completes first.
      */
     suspend fun loginFromCache(): Result<T> =
         loginWithStrategy { cb -> authProvider.loginFromCache(cb) }
@@ -293,86 +323,197 @@ class ConvexClientWithAuth<T>(
      * Triggers a logout flow and updates the [authState].
      *
      * The [authState] will change to [AuthState.Unauthenticated] if logout is successful.
+     * Tokens the [AuthProvider] pushes to an earlier `onIdToken` callback afterwards are ignored.
      */
     suspend fun logout(context: Context): Result<Void?> {
         val result = authProvider.logout(context)
-        if (result.isSuccess) {
-            authBridge = null
-            ffiClient.setAuthCallback(null)
-            _authState.emit(AuthState.Unauthenticated())
+        if (result.isFailure) return result
+        return authMutex.withLock {
+            authBridge.endSession()
+            try {
+                ffiClient.setAuthCallback(null)
+                result
+            } catch (e: ClientException) {
+                Result.failure(e.toError())
+            } finally {
+                _authState.value = AuthState.Unauthenticated()
+            }
         }
-        return result
     }
 
     private suspend fun loginWithStrategy(
         strategy: suspend (onIdToken: (String?) -> Unit) -> Result<T>
     ): Result<T> {
-        _authState.emit(AuthState.AuthLoading())
-        val idTokenHandler = onIdTokenHandler()
-        val result = strategy(idTokenHandler)
-        return result.onSuccess { authData ->
+        _authState.value = AuthState.AuthLoading()
+        val session = authBridge.currentSession
+        try {
+            val authData = strategy(onIdTokenHandler(session)).getOrElse { error ->
+                _authState.value = AuthState.Unauthenticated()
+                return Result.failure(error)
+            }
             val token = authProvider.extractIdToken(authData)
-            val bridge = AuthTokenProviderBridge(
-                initialToken = token,
-                getValidToken = {
-                    authProvider.loginFromCache(idTokenHandler).getOrNull()
-                        ?.let { authProvider.extractIdToken(it) }
+            return authMutex.withLock {
+                if (!authBridge.activate(token, session)) {
+                    // A logout won while the login flow ran; it has published Unauthenticated.
+                    return@withLock Result.failure(CancellationException("Logged out during login"))
                 }
-            )
-            authBridge = bridge
-            ffiClient.setAuthCallback(bridge)
-            _authState.emit(AuthState.Authenticated(authData))
-        }.onFailure { _authState.emit(AuthState.Unauthenticated()) }
+                try {
+                    ffiClient.setAuthCallback(authBridge)
+                } catch (e: ClientException) {
+                    authBridge.endSession(session)
+                    throw e.toError()
+                }
+                _authState.value = AuthState.Authenticated(authData)
+                Result.success(authData)
+            }
+        } catch (e: Throwable) {
+            _authState.value = AuthState.Unauthenticated()
+            // Cancellation and errors (such as the NotImplementedError of a provider without
+            // loginFromCache) propagate; other failures become the result.
+            if (e is CancellationException || e !is Exception) throw e
+            Log.e("ConvexClientWithAuth", "Login failed", e)
+            return Result.failure(e)
+        }
     }
 
     /**
-     * Creates a handler for token updates from the auth provider.
+     * Creates the callback a login of [session] hands the [AuthProvider] for token updates.
      *
-     * This handler is passed to the auth provider during login and should be called
-     * whenever a fresh token is available or when the session becomes invalid.
+     * The provider should call it whenever a fresh token is available, or with `null` when the
+     * session becomes invalid. It only affects [session], it applies tokens in the order they are
+     * pushed, and it holds the client weakly (see [refreshThrough]).
      */
-    private fun onIdTokenHandler(): (String?) -> Unit = { token ->
-        coroutineScope.launch {
+    private fun onIdTokenHandler(session: Long): (String?) -> Unit {
+        val client = WeakReference(this)
+        val scope = coroutineScope
+        return handler@{ token ->
+            val self = client.get() ?: return@handler
+            val changed =
+                if (token != null) self.authBridge.update(token, session) else self.authBridge.endSession(session)
+            if (changed) scope.launch { client.get()?.syncAuthCallback() }
+        }
+    }
+
+    /**
+     * Brings the Rust client in line with the bridge after a pushed token: re-installing the
+     * bridge makes the Rust client pull the new token right away, and an ended session removes it.
+     */
+    private suspend fun syncAuthCallback() {
+        authMutex.withLock {
             try {
-                if (token != null) {
-                    authBridge?.updateToken(token)
-                    authBridge?.let { ffiClient.setAuthCallback(it) }
+                if (authBridge.hasToken) {
+                    ffiClient.setAuthCallback(authBridge)
                 } else {
-                    authBridge = null
                     ffiClient.setAuthCallback(null)
-                    _authState.emit(AuthState.Unauthenticated())
+                    _authState.value = AuthState.Unauthenticated()
                 }
             } catch (e: Exception) {
                 Log.e("ConvexClientWithAuth", "Error handling token refresh", e)
-                _authState.emit(AuthState.Unauthenticated())
+                _authState.value = AuthState.Unauthenticated()
             }
         }
     }
 
-    /**
-     * Adapts the push-based [onIdToken] model to the pull-based [AuthTokenProvider] callback
-     * model used by the Rust client.
-     *
-     * Caches the latest pushed token so the Rust client can pull it on demand (e.g. on WebSocket
-     * reconnect). When [forceRefresh] is requested, delegates to [loginFromCache] via the
-     * [getValidToken] lambda to obtain a fresh token.
-     */
-    private inner class AuthTokenProviderBridge(
-        initialToken: String?,
-        private val getValidToken: suspend () -> String?
-    ) : AuthTokenProvider {
-        private val mutex = Mutex()
-        private var cachedToken: String? = initialToken
-
-        override suspend fun fetchToken(forceRefresh: Boolean): String? = mutex.withLock {
-            if (forceRefresh) {
-                cachedToken = getValidToken()
+    private companion object {
+        /**
+         * The bridge's refresh: a cached login through [authProvider].
+         *
+         * It MUST hold the client weakly. uniffi's handle map keeps every object the Rust client
+         * holds strongly reachable, and the bridge is one of them, so a strong reference here
+         * would keep a discarded client, and with it the Rust client, its runtime and its
+         * WebSocket, alive until the process exits (the Kotlin side of
+         * get-convex/convex-swift#25).
+         */
+        fun <T> refreshThrough(
+            client: WeakReference<ConvexClientWithAuth<T>>,
+            authProvider: AuthProvider<T>
+        ): suspend (session: Long) -> String? = { session ->
+            client.get()?.onIdTokenHandler(session)?.let { onIdToken ->
+                authProvider.loginFromCache(onIdToken).getOrNull()?.let(authProvider::extractIdToken)
             }
-            cachedToken
         }
+    }
+}
 
-        suspend fun updateToken(token: String?) = mutex.withLock {
-            cachedToken = token
+/**
+ * The [AuthTokenProvider] that a [ConvexClientWithAuth] hands to the Rust client, adapting the
+ * push-based `onIdToken` model to the Rust client's pull-based token callback.
+ *
+ * A client creates exactly one bridge and keeps it for its whole lifetime. All state is guarded by
+ * [lock], because the Rust worker, token pushes and the client's own methods reach it from
+ * different threads (the Kotlin side of get-convex/convex-swift#21).
+ */
+private class AuthTokenProviderBridge(
+    private val refresh: suspend (session: Long) -> String?
+) : AuthTokenProvider {
+    private val lock = Any()
+
+    /** The token handed to the Rust client, or `null` when no session is active. */
+    private var token: String? = null
+
+    /**
+     * Incremented whenever a session ends, so token callbacks and logins that belong to an
+     * earlier session can be told apart from current ones and ignored.
+     */
+    private var session = 0L
+
+    val currentSession: Long get() = synchronized(lock) { session }
+
+    val hasToken: Boolean get() = synchronized(lock) { token != null }
+
+    /** Starts or continues [session] with [token]. Returns `false` if [session] has ended. */
+    fun activate(token: String, session: Long): Boolean = synchronized(lock) {
+        if (this.session != session) return false
+        this.token = token
+        true
+    }
+
+    /**
+     * Replaces the token of [session] if it is still active. Returns `true` only if the token
+     * changed, so a late refresh can never start a session on its own and a token the Rust client
+     * already has (for example one it just pulled through [fetchToken]) isn't pushed again.
+     */
+    fun update(token: String, session: Long): Boolean = synchronized(lock) {
+        val current = this.token
+        if (this.session != session || current == null || current == token) return false
+        this.token = token
+        true
+    }
+
+    /**
+     * Ends the current session, or only [session] when given. Returns `false` if [session] had
+     * already ended.
+     */
+    fun endSession(session: Long? = null): Boolean = synchronized(lock) {
+        if (session != null && session != this.session) return false
+        this.session += 1
+        token = null
+        true
+    }
+
+    override suspend fun fetchToken(forceRefresh: Boolean): String? {
+        val (cached, session) = synchronized(lock) { token to this.session }
+        if (cached == null || !forceRefresh) return cached
+        // It's not required to treat this as a "force refresh": `refresh` only has to return a
+        // valid token, which can be one the AuthProvider cached earlier. A refresh that fails
+        // keeps the current token rather than signing the socket out.
+        //
+        // Nothing but this call's own cancellation may escape: uniffi turns any other exception
+        // into a panic inside the Rust client's worker, which stops the client for good, and an
+        // Error (such as the NotImplementedError of a provider without loginFromCache) would be
+        // uncaught on uniffi's coroutine and crash the process.
+        val fresh = try {
+            refresh(session)
+        } catch (e: Throwable) {
+            currentCoroutineContext().ensureActive()
+            Log.e("ConvexClientWithAuth", "Token refresh failed", e)
+            null
+        } ?: return cached
+        return synchronized(lock) {
+            // A logout while the refresh was in flight wins over the refreshed token.
+            if (this.session != session || token == null) return null
+            token = fresh
+            fresh
         }
     }
 }

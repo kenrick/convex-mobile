@@ -1,5 +1,6 @@
 package dev.convex.android
 
+import android.content.Context
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicReference
 
@@ -44,5 +45,47 @@ internal class ThreadSafeFakeFfiClient : MobileConvexClientInterface {
                 subscribers.remove(name, subscriber)
             }
         }
+    }
+}
+
+/**
+ * An [AuthProvider] that, like WorkOS or Clerk wrappers, keeps the latest `onIdToken` callback and
+ * pushes refreshed tokens through it.
+ */
+internal class ThreadSafeFakeAuthProvider : AuthProvider<String> {
+    private val lock = Any()
+    private var onIdToken: ((String?) -> Unit)? = null
+    private var counter = 0
+
+    /** When set, cached logins (and so token refreshes) fail with it. */
+    @Volatile
+    var refreshFailure: Throwable? = null
+
+    val latestCallback: ((String?) -> Unit)? get() = synchronized(lock) { onIdToken }
+
+    override suspend fun login(context: Context, onIdToken: (String?) -> Unit): Result<String> =
+        Result.success(issue(onIdToken))
+
+    override suspend fun loginFromCache(onIdToken: (String?) -> Unit): Result<String> {
+        refreshFailure?.let { return Result.failure(it) }
+        return Result.success(issue(onIdToken))
+    }
+
+    override suspend fun logout(context: Context): Result<Void?> = Result.success(null)
+
+    override fun extractIdToken(authResult: String): String = authResult
+
+    fun pushToken(token: String?) {
+        latestCallback?.invoke(token)
+    }
+
+    private fun issue(callback: (String?) -> Unit): String {
+        val token = synchronized(lock) {
+            onIdToken = callback
+            counter += 1
+            "login-$counter"
+        }
+        callback(token)
+        return token
     }
 }
