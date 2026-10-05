@@ -202,6 +202,27 @@ open class ConvexClient(
     suspend fun mutation(name: String, args: Map<String, Any?>? = null) {
         mutation<Unit?>(name = name, args = args)
     }
+
+    /**
+     * Authenticates this client with a deployment admin key, acting as [identity] when one is
+     * given.
+     *
+     * For local development only: an admin key has full access to its deployment, so never ship
+     * one in an app. Functions see [identity] through `ctx.auth.getUserIdentity()`. This is the
+     * counterpart of the JavaScript client's `setAdminAuth(adminKey, identity)`, and it replaces
+     * any auth set earlier.
+     *
+     * @throws InternalError if [identity] has neither a [UserIdentity.tokenIdentifier] nor both an
+     *   [UserIdentity.issuer] and a [UserIdentity.subject].
+     */
+    open suspend fun setAdminAuth(adminKey: String, identity: UserIdentity? = null) {
+        val identityJson = identity?.let { jsonApi.encodeToString(UserIdentity.serializer(), it) }
+        try {
+            ffiClient.setAdminAuth(adminKey, identityJson)
+        } catch (e: ClientException) {
+            throw e.toError()
+        }
+    }
 }
 
 /**
@@ -322,8 +343,9 @@ class ConvexClientWithAuth<T>(
     /**
      * Triggers a logout flow and updates the [authState].
      *
-     * The [authState] will change to [AuthState.Unauthenticated] if logout is successful.
-     * Tokens the [AuthProvider] pushes to an earlier `onIdToken` callback afterwards are ignored.
+     * The [authState] will change to [AuthState.Unauthenticated] if logout is successful. This
+     * also clears auth set with [setAdminAuth]. Tokens the [AuthProvider] pushes to an earlier
+     * `onIdToken` callback afterwards are ignored.
      */
     suspend fun logout(context: Context): Result<Void?> {
         val result = authProvider.logout(context)
@@ -338,6 +360,19 @@ class ConvexClientWithAuth<T>(
             } finally {
                 _authState.value = AuthState.Unauthenticated()
             }
+        }
+    }
+
+    /**
+     * See [ConvexClient.setAdminAuth].
+     *
+     * Also ends any session started with [login] or [loginFromCache], so a late token refresh
+     * can't replace the admin auth. [authState] doesn't track admin auth, and [logout] clears it.
+     */
+    override suspend fun setAdminAuth(adminKey: String, identity: UserIdentity?) {
+        authMutex.withLock {
+            authBridge.endSession()
+            super.setAdminAuth(adminKey, identity)
         }
     }
 
